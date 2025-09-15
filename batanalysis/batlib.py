@@ -2633,3 +2633,34 @@ def decompose_det_id(detector_id):
     _, side = np.divmod(det_in_dm, np.int16(2))
 
     return block, dm, side, channel
+
+def simbadlocation(objectname):
+    """ 
+    This function calls astroquery's Simbad function and returns a astropy SkyCoord object with the coordinates  of the object or it raises an error is no source is found.
+    
+    :param objectname: str of the object name to query Simbad for
+    :return: astropy SkyCoord object
+    """
+    
+    from astroquery.simbad import Simbad
+    from astropy.coordinates import SkyCoord
+    
+    try:
+        table = Simbad.query_object(objectname)
+        if len(table) != 1:
+            raise RuntimeError(f"No unique match for {objectname}")
+
+        if "RA" in table.keys():
+            ra_string="RA"
+            dec_string="DEC"
+        else:
+            ra_string="ra"
+            dec_string="dec"
+
+        co = SkyCoord(
+            table[ra_string], table[dec_string], unit=(u.hour, u.deg), frame="fk5"
+        )
+        return co
+    except Exception as e:
+        raise RuntimeError(f"{e}")
+
