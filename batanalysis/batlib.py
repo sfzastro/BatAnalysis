@@ -1699,14 +1699,74 @@ def test_remote_URL(url):
     return requests.head(url).status_code < 400
 
 
-def from_heasarc(object_name=None, tablename="swiftmastr", **kwargs):
+def from_heasarc(tablename="swiftmastr", time_range=None, columns=None, tap_query=None, return_query=False):
+    """
+    This function creates the basic TAP query for querying a table and extracting the data based on time ranges. The user can specify which columns are returned if necessary, otherwise all columns of the specified table are returned from the query. If no time_range is specified, the entire table is returned. 
+    
+    While this function is fairly simple, the user can construct more advanced TAP queries that get passed to astroquery.Heasarc.query_tap.
+    """
     heasarc = Heasarc()
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", ap.utils.exceptions.AstropyWarning)
-        table = heasarc.query_object(
-            object_name=object_name, mission=tablename, **kwargs
-        )
-    return table
+    
+    #check that we are looking for a real table
+    if tablename not in heasarc.list_catalogs()["name"]:
+        raise ValueError(f"The specified table {tablename} is not one of the catalogs available to query in Heasarc.")
+    
+    #check that we have astropy.Time objects in the time_range variable if that is passed in
+    if time_range is not None:
+        if len(time_range) != 2:
+            raise ValueError("The length of the time_range array must be 2. It must be an array of 2 astropy Time objects that specify the start/stop times to search for data in the {tablename} table.")
+        
+        for i in time_range:
+            if not isinstance(i, Time):
+                raise ValueError("The time_range parameter must be composed of 2 astropy time objects.")
+    
+    
+    #check that the requested columns are actually in the table
+    if columns is not None:
+        #check that the columns is a list of string
+        if not isinstance(columns, list):
+            raise ValueError("The columns parameter must be a list of strings.")
+        
+        table_columns=heasarc.list_columns(tablename, full=True)
+
+        for i in columns:
+            if not isinstance(i, str):
+                raise ValueError("All entries in the list that is passed into the columns parameter must be a string.")
+            
+            if i not in table_columns["name"]:
+                raise ValueError(f"The requested column {i} is not a valid column in the {tablename} table.")
+    else:
+        #otherwise assume that we want all columns
+        columns=heasarc.list_columns(tablename, full=True)["name"]
+        
+        
+    if tap_query is None:
+        #then we construct the tap query based on the input
+        tap_query= f"SELECT TOP 9999999 {','.join(columns)} FROM {tablename} "
+        
+        if time_range is not None:
+            #extract the time related columns that we will query from. first get all time related info. This is meant to allow us to see if the table format has changed for whatever reason.
+            time_columns=[i for i in Heasarc.list_columns(tablename, full=True) if "time" in i["name"]]
+            
+            #then select the correct column
+            if "tdrss" in tablename:
+                time_column_info=[i for i in time_columns if '"time"'==i["name"]][0]
+            else:
+                time_column_info=[i for i in time_columns if "start" in i["name"]][0]
+            
+            #make sure that thetimes are converted to the correct format
+            time_range=Time([i.to_value(time_column_info["unit"]) for i in time_range], format=time_column_info["unit"])
+            tap_query += f"WHERE {time_column_info['name']} BETWEEN {time_range.min()} AND {time_range.max()}"
+                
+    try:
+        table = heasarc.query_tap(tap_query).to_table()
+    except Exception as e:
+        raise RuntimeError(f"The Heasarc TAP query {tap_query} failed with the following message: {e}")
+        
+    if return_query:
+        return table, tap_query
+    else:
+        return table
 
 
 """
