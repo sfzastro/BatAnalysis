@@ -21,7 +21,7 @@ object_batsource = swiftbat.source(
     ra=object_location[0], dec=object_location[1], name=object_name
 )
 
-table_everything, query = from_heasarc(time_range=Time(["2019-11-01","2020-01-30"]), return_query=True)
+table_everything, query = ba.from_heasarc(time_range=Time(["2019-11-01","2020-01-30"]), return_query=True)
 
 
 minexposure = 1000  # cm^2 after cos adjust
