@@ -18,7 +18,7 @@ import requests
 import swiftbat.swutil as sbu
 import swifttools.swift_too as swtoo
 from astropy.io import fits
-from astropy.time import Time
+from astropy.time import Time, TimeDelta
 from astroquery.heasarc import Heasarc
 
 # from xspec import *
@@ -1825,11 +1825,149 @@ The infixes and suffixes:
 
 """
 
+def query_swift_trigger_data(filter_type="time", return_query=True, query=None, **kwargs):
+    """
+    Query Swift subthreshold trigger data with filtering options and closest-time calibration matching.
+    
+    Parameters:
+    -----------
+    filter_type : str
+        Type of filter to apply: "time", "target_range", or "target_list"
+    
+    kwargs:
+        For filter_type="time":
+            - start_time: Start time (string in any Astropy-compatible format)
+            - stop_time: End time (string in any Astropy-compatible format)
+        
+        For filter_type="target_range":
+            - min_target_id: Minimum target ID
+            - max_target_id: Maximum target ID
+            
+        For filter_type="target_list":
+            - target_ids: List of target IDs
+    
+    Returns:
+    --------
+    astropy.table.Table: Result of the query with proper units
+    """
+    heasarc = Heasarc()
+    
+    # Check if a custom query was provided
+    if query is None:
+            
+        # Apply filtering condition
+        filter_condition = ""
+        if filter_type == "time":
+            # Convert times to MJD
+            start_time = Time(kwargs.get('start_time')).mjd
+            stop_time = Time(kwargs.get('stop_time')).mjd
+            filter_condition = f"WHERE time BETWEEN {start_time} AND {stop_time}"
+            
+        elif filter_type == "target_range":
+            min_id = kwargs.get('min_target_id')
+            max_id = kwargs.get('max_target_id')
+            filter_condition = f"WHERE target_id BETWEEN {min_id} AND {max_id}"
+            
+        elif filter_type == "target_list":
+            target_ids = kwargs.get('target_ids', [])
+            if not target_ids:
+                raise ValueError("No target IDs provided")
+                
+            target_list_str = ','.join(str(tid) for tid in target_ids)
+            filter_condition = f"WHERE target_id IN ({target_list_str})"
+        
+        
+        
+        # Build the optimized query with time-filtered swiftmastr plus and minus 1 day to find the closest calibration
+        query = f"""
+        WITH filtered_swifttdrss AS (
+            SELECT target_id, obsid, time, time_seconds
+            FROM swifttdrss
+            {filter_condition}
+        ),
+        time_bounds AS (
+            SELECT MIN(time) - 1.0 AS min_time, MAX(time) + 1.0 AS max_time
+            FROM filtered_swifttdrss
+        ),
+        filtered_swiftmastr AS (
+            SELECT s3.obsid, s3.start_time
+            FROM swiftmastr s3
+            CROSS JOIN time_bounds tb
+            WHERE s3.start_time BETWEEN tb.min_time AND tb.max_time
+        ),
+        all_time_differences AS (
+            SELECT s1.target_id,
+                   s3.obsid AS calibration_obsid, 
+                   s3.start_time AS calibration_start_time,
+                   ABS(s1.time - s3.start_time) AS calibration_abs_dt
+            FROM filtered_swifttdrss s1
+            CROSS JOIN filtered_swiftmastr s3
+        ),
+        closest_calibration_per_target AS (
+            SELECT target_id, calibration_obsid, calibration_start_time, calibration_abs_dt,
+                   ROW_NUMBER() OVER (PARTITION BY target_id ORDER BY calibration_abs_dt) AS rn
+            FROM all_time_differences
+        ),
+        closest_calibration AS (
+            SELECT target_id, calibration_obsid, calibration_start_time, calibration_abs_dt
+            FROM closest_calibration_per_target 
+            WHERE rn = 1
+        )
+        SELECT s1.target_id, s1.obsid, s1.time, s1.time_seconds,
+               cc.calibration_obsid, cc.calibration_start_time, cc.calibration_abs_dt
+        FROM filtered_swifttdrss s1
+        LEFT JOIN closest_calibration cc ON (s1.target_id = cc.target_id)
+        ORDER BY s1.target_id, s1.time
+        """
+        
+    else:
+        if any(key in kwargs for key in ['start_time', 'end_time', 'min_target_id', 'max_target_id', 'target_ids']):
+            warnings.warn("Custom query provided - ignoring all filtering parameters")
+
+    
+    # Execute the query
+    result = heasarc.query_tap(query)
+    table = result.to_table()
+            
+    # Add units to appropriate columns (for both custom and standard queries)
+    time_columns = ['time', 'start_time', 'stop_time', 'calibration_start_time']
+    for col in time_columns:
+        if col in table.colnames:
+            table[col].unit = u.d  # MJD is in days
+    
+    if 'time_seconds' in table.colnames:
+        table['time_seconds'].unit = u.s  # Time in seconds
+    
+    if 'calibration_abs_dt' in table.colnames:
+        table['calibration_abs_dt'].unit = u.d  # Time difference in days
+        
+    #now search for the obsid that contains the snapshot/attitude information for the time that each trigger data was collected
+    afst_obs=swtoo.ObsQuery(begin=Time(table["time"].min(), format="mjd"), end=Time(table["time"].max(), format="mjd")+TimeDelta(1, "d"))
+    
+    #iterate over to find the associated obsids of the observations that have snapshots that occur when the trigger data was taken
+    snapshot_observations=[]
+    for row in table:
+        trigger_time=Time(row["time"], format="mjd")
+        for afst_entry in afst_obs.entries:
+            if (trigger_time > Time(afst_entry.begin)) and (trigger_time < Time(afst_entry.end)):
+                snapshot_observations.append(afst_entry.obsid)
+    
+    #now create a new column and add it to the astropy Table
+    col=table.Column(data=snapshot_observations, name="mastr_obsid", description="swiftmastr obsid with the attitude data associated with the trigger of interest")
+    table.add_column(col)
+
+    
+    if return_query:
+        return table, query
+    else:
+        return table
+
+
 
 def download_swift_trigger_data(triggers=None, triggerrange=None, triggertime=None,
                                 timewindow=300, fetch=True, outdir=None,
                                 clobber=False, quiet=True,
-                                match=None, return_table=False, **query):
+                                match=None, return_table=False, return_query=False, query=None):
     """Find data corresponding to trigger on remote server and local disk
 
     Looks up triggers in the 'swifttdrss' table, then downloads the selected triggers
@@ -1849,15 +1987,16 @@ def download_swift_trigger_data(triggers=None, triggerrange=None, triggertime=No
     Args:
         :param triggers (int|Iterable[int], optional): Specific trigger number. Defaults to None.
         :param triggerrange (Tuple[int,int], optional): inclusive range of trigger numbers. Defaults to None.
-        :param triggertime (datetime.datetime, optional): Time of desired trigger(s). Defaults to None.
+        :param triggertime (datetime.datetime|Iterable[datetime.datetime], optional): Time of desired trigger(s) or a range of times to obtain triggers between (the timebin edges are not inclusive). Defaults to None.
         :param timewindow (float, optional): Number of seconds +/- triggertime. Defaults to 300.
         :param fetch (bool, optional): Copy from server to local disk, if necessary
         :param outdir (Path, optional): Top-level data directory for download.
         :param clobber (bool): Overwrite local files.  Defaults to False.
         :param quiet (bool): When downloading, don't print anything out. Defaults to True.
         :param match (str|list[str], optional): Filename patterns to match
-        :param return_table (bool): Return the swifttdrss table queried from the user supplied conditions. Defaults to False
-        :param **query (dict(parameter:terms)): Conditions on the swifttdrss table
+        :param return_table (bool): Return the resulting table queried from the user supplied conditions. Defaults to False
+        :param return_query (bool): Return the query that was constructed based on the user supplied conditions. Defaults to False
+        :param query (str): ADQL Query to be passed to Heasarc via the query_swift_trigger_data function
     Returns:
         dict(int:Swift_Data): Result of each trigger's download.
     """
