@@ -1825,7 +1825,7 @@ The infixes and suffixes:
 
 """
 
-def query_swift_trigger_data(filter_type="time", return_query=True, query=None, **kwargs):
+def query_swift_trigger_data(filter_type="time", return_query=False, query=None, **kwargs):
     """
     Query Swift subthreshold trigger data with filtering options and closest-time calibration matching.
     
@@ -1833,6 +1833,11 @@ def query_swift_trigger_data(filter_type="time", return_query=True, query=None, 
     -----------
     filter_type : str
         Type of filter to apply: "time", "target_range", or "target_list"
+    return_query : boolean, optional
+        Return the constructed ADQL query that was passed. False by default
+    query : str, optional
+        Custom ADQL query that will override all other parameters.
+        If provided, this exact query will be executed.
     
     kwargs:
         For filter_type="time":
@@ -1921,7 +1926,7 @@ def query_swift_trigger_data(filter_type="time", return_query=True, query=None, 
         """
         
     else:
-        if any(key in kwargs for key in ['start_time', 'end_time', 'min_target_id', 'max_target_id', 'target_ids']):
+        if any(key in kwargs for key in ['start_time', 'stop_time', 'min_target_id', 'max_target_id', 'target_ids']):
             warnings.warn("Custom query provided - ignoring all filtering parameters")
 
     
@@ -1968,18 +1973,14 @@ def download_swift_trigger_data(triggers=None, triggerrange=None, triggertime=No
                                 timewindow=300, fetch=True, outdir=None,
                                 clobber=False, quiet=True,
                                 match=None, return_table=False, return_query=False, query=None):
-    """Find data corresponding to trigger on remote server and local disk
+    """
+    Find data corresponding to trigger on remote server and local disk
 
     Looks up triggers in the 'swifttdrss' table, then downloads the selected triggers
     to local disk. If return_table is True, the queried HEASARC swifttdrss table is also returned. 
     
     Currently, this function covers only data delivered to HEASARC, and not quicklook data.
 
-    **query arguments are used to restrict the entries.  For example
-        Target_ID="99999..100000;1234567", Time_seconds="123456789..124000000"
-    where Target_ID is the trignum (no leading zeros), Time_seconds is the trigger MET
-    without UTCF correction, while Time (use ISO8601) is corrected UTC
-    '..' gives a range, ';' gives an or'd choice
     
     If you want only TTE data, it may be selected with
     match = ['*bevsh*']
@@ -1987,7 +1988,7 @@ def download_swift_trigger_data(triggers=None, triggerrange=None, triggertime=No
     Args:
         :param triggers (int|Iterable[int], optional): Specific trigger number. Defaults to None.
         :param triggerrange (Tuple[int,int], optional): inclusive range of trigger numbers. Defaults to None.
-        :param triggertime (datetime.datetime|Iterable[datetime.datetime], optional): Time of desired trigger(s) or a range of times to obtain triggers between (the timebin edges are not inclusive). Defaults to None.
+        :param triggertime (datetime.datetime|Iterable[datetime.datetime], optional): Time of desired trigger(s) or a list/array that defines the times to obtain triggers within (the timebin edges are not inclusive). Defaults to None.
         :param timewindow (float, optional): Number of seconds +/- triggertime. Defaults to 300.
         :param fetch (bool, optional): Copy from server to local disk, if necessary
         :param outdir (Path, optional): Top-level data directory for download.
@@ -2000,31 +2001,36 @@ def download_swift_trigger_data(triggers=None, triggerrange=None, triggertime=No
     Returns:
         dict(int:Swift_Data): Result of each trigger's download.
     """
-    trigfield = 'Target_ID'
-    triggerconditions = [query.pop(trigfield)] if trigfield in query else []
     if triggers is not None:
         if np.isscalar(triggers):
             triggers = [triggers]
-        triggerconditions.extend([str(trigger) for trigger in triggers])
-    if triggerrange is not None:
-        triggerconditions.append(f"{triggerrange[0]}..{triggerrange[1]}")
-    if triggerconditions:
-        query[trigfield] = ";".join(triggerconditions)
-    if triggertime:
-        if 'Time' in query:
-            raise RuntimeError("Do not specify both 'Time' conditions and a triggertime")
-        tstart, tend = [triggertime + datetime.timedelta(seconds=minplus * timewindow)
-                        for minplus in (-1, 1)]
-        query["Time"] = f"{tstart:%Y-%m-%dT%H:%M:%S}..{tend:%Y-%m-%dT%H:%M:%S}"
-    query.setdefault('fields', 'all')
-    triggertable = from_heasarc(tablename='swifttdrss', **query)
+        triggertable, query=query_swift_trigger_data(filter_type="target_list", target_ids=triggers, return_query=True)
+    elif triggerrange is not None:
+        triggertable, query=query_swift_trigger_data(filter_type="target_range", min_target_id=np.min(triggerrange), max_target_id=np.max(triggerrange), return_query=True)
+    elif triggertime:
+        if np.isscalar(triggertime):
+            tstart, tend = Time([triggertime + datetime.timedelta(seconds=minplus * timewindow)
+                        for minplus in (-1, 1)])
+        else:
+            tstart=triggertime[0]
+            tend=triggertime[1]
+        triggertable, query = query_swift_trigger_data(filter_type="time", start_time=tstart, stop_time=tend, return_query=True)
+    
+    
     # UNIMPLEMENTED: triggers in quicklook data are not returned
     result = {}
 
     if len(triggertable):
         topdir = Path(outdir) if outdir is not None else datadir()
 
-        for trigger, triggermjd in zip(triggertable["TARGET_ID"], triggertable["TIME"]):
+        for row in triggertable:
+            
+            trigger=row["target_id"]
+            triggermjd=row["time"]
+            calibration_obsid=row["calibration_obsid"]
+            att_obsid=row["mastr_obsid"]
+            
+            
             all_res = []
             triggeriso = np.datetime_as_string(met2utc(None, mjd_time=triggermjd))
 
@@ -2041,77 +2047,88 @@ def download_swift_trigger_data(triggers=None, triggerrange=None, triggertime=No
 
                 # if we have no errors (ie find the data) want to get the observation with all the attitude/gain/det on & off
                 # hk/auxil files that we will need to analyze the failed trigger TTE data
-                if not res.status.errors:
-                    tstart, tend = Time(
-                        [Time(triggermjd, format="mjd").datetime + datetime.timedelta(seconds=minplus * timewindow)
-                         for minplus in (-1, 1)])
+                # if we dont care about downloading the data, then we dont need to do this reorganization
+                if not res.status.errors and fetch:
+                    local_download_path=res.entries[0].localpath
+                    download_bat=False
+                    download_auxil=False
+                
+                    #download the calibration file and the attitude file, from potentially different obsids and organize them for the analysis of a subthreshold trigger
+                    try:
+                        for obsid, obs_type in zip([calibration_obsid, att_obsid], ["calibration", "attitude"]):
+                        
+                            # if the local path is None, then we dont want to download the nearest obsid data so just set
+                            # this to None
+                            save_dir = None if not fetch else Path(local_download_path).parent
+                            if "calibration" in obs_type:
+                                download_bat=True
+                                download_auxil=False
+                            else:
+                                download_bat=False
+                                download_auxil=True
 
-                    query = {'start_time': f"{tstart.isot}..{tend.isot}", 'fields': 'all'}
-                    nearest_obs_table = from_heasarc(**query)
-                    dt = Time(float(triggermjd), format="mjd") - Time(nearest_obs_table["START_TIME"], format="mjd")
-                    closest_obsid = nearest_obs_table["OBSID"][np.argmin(np.abs(dt))]
-                    if timewindow > np.abs(dt[np.argmin(np.abs(dt))].to("s")).value:
-                        # if the local path is None, then we dont want to download the nearest obsid data so just set
-                        # this to None
-                        save_dir = None if not fetch else Path(res.entries[0].localpath).parent
-                        res = swtoo.Swift_Data(obsid=closest_obsid, bat=True, outdir=save_dir, match=match, fetch=fetch)
+                                
+                            res = swtoo.Swift_Data(obsid=obsid, bat=download_bat, auxil=download_auxil, outdir=save_dir, match=match, fetch=fetch)
 
-                        all_res.append(res)
+                            all_res.append(res)
 
-                        # if we dont care about downloading the data, then we dont need to do this reorganization
-                        if not res.status.errors and fetch:
-                            # if we have no issues, then set up the directory for us to have the usual auxil/tdrss/hk directories with respect to the
-                            # subthreshold trigger. We can create a symbolic link to keep the obid directory the same so we
-                            # have record of which obsid was used to process the subthreshold trigger event data
-                            closest_obsid_dir = save_dir.joinpath(closest_obsid)
+                            if not res.status.errors and fetch:
+                                # if we have no issues, then set up the directory for us to have the usual auxil/tdrss/hk directories with respect to the
+                                # subthreshold trigger. We can create a symbolic link to keep the obid directory the same so we
+                                # have record of which obsid was used to process the subthreshold trigger event data
+                                closest_obsid_dir = save_dir.joinpath(obsid)
 
-                            new_auxil = save_dir.joinpath("auxil")
-                            new_bat = save_dir.joinpath("bat")
+                                if "calibration" in obs_type:
+                                    new_bat = save_dir.joinpath("bat")
+                                    
+                                    if not new_bat.is_symlink():
+                                        new_bat.symlink_to(closest_obsid_dir.relative_to(save_dir).joinpath("bat"),
+                                                           target_is_directory=True)
+                                                           
+                                    # need to checck for an event folder, if there is then there are event files that will need
+                                    # to have something done with them, otherwise just create the folder and copy the OG
+                                    # subthreshold event file (need to copy to unzip it)
+                                    event_dir = new_bat.joinpath("event")
+                                    if event_dir.exists():
+                                        shutil.rmtree(event_dir)
 
-                            # if a directory has already been downloaded previously, then these symlinks have already been set
-                            if not new_auxil.is_symlink():
-                                new_auxil.symlink_to(closest_obsid_dir.relative_to(save_dir).joinpath("auxil"),
-                                                     target_is_directory=True)
+                                    event_dir.mkdir()
+                                    event_files = sorted(save_dir.glob("*.evt*"))
 
-                            if not new_bat.is_symlink():
-                                new_bat.symlink_to(closest_obsid_dir.relative_to(save_dir).joinpath("bat"),
-                                                   target_is_directory=True)
+                                    for event_file in event_files:
+                                        shutil.copy(event_file, event_dir)
 
-                            # need to checck for an event folder, if there is then there are event files that will need
-                            # to have something done with them, otherwise just create the folder and copy the OG
-                            # subthreshold event file (need to copy to unzip it)
-                            event_dir = new_bat.joinpath("event")
-                            if event_dir.exists():
-                                shutil.rmtree(event_dir)
+                                    # do the same for the tdrss directory
+                                    tdrss_dir = save_dir.joinpath("tdrss")
+                                    if tdrss_dir.exists():
+                                        shutil.rmtree(tdrss_dir)
 
-                            event_dir.mkdir()
-                            event_files = sorted(save_dir.glob("*.evt*"))
+                                    tdrss_dir.mkdir()
+                                    tdrss_files = sorted(save_dir.glob("*bal*"))
 
-                            for event_file in event_files:
-                                shutil.copy(event_file, event_dir)
+                                    for tdrss_file in tdrss_files:
+                                        shutil.copy(tdrss_file, tdrss_dir)
 
-                            # do the same for the tdrss directory
-                            tdrss_dir = save_dir.joinpath("tdrss")
-                            if tdrss_dir.exists():
-                                shutil.rmtree(tdrss_dir)
 
-                            tdrss_dir.mkdir()
-                            tdrss_files = sorted(save_dir.glob("*bal*"))
+                                else:
+                                    new_auxil = save_dir.joinpath("auxil")
 
-                            for tdrss_file in tdrss_files:
-                                shutil.copy(tdrss_file, tdrss_dir)
 
-                        else:
+                                    # if a directory has already been downloaded previously, then these symlinks have already been set
+                                    if not new_auxil.is_symlink():
+                                        new_auxil.symlink_to(closest_obsid_dir.relative_to(save_dir).joinpath("auxil"),
+                                                             target_is_directory=True)
+
+
+
+                        except Exception as e:
                             if fetch:
                                 warnings.warn(
-                                    f"Downloading the closest subthreshold trigger ObsID {closest_obsid} failed. Continuing with the next subthreshold trigger.")
+                                    f"Downloading the {obs_type} data from obsid {trigger} for subthreshold trigger {obsid} failed. Continuing with the next subthreshold trigger.")
 
-                    else:
-                        warnings.warn(
-                            f"The subthreshold trigger {trigger} has a nearest hk/auxil observation ID that is >{timewindow} s away. ObsID {closest_obsid} is  {np.abs(dt[np.argmin(np.abs(dt))].to('s'))} away.")
 
-                if res.status.errors:
-                    continue
+                #if res.status.errors:
+                #    continue
             else:
                 all_res.append(res)
 
