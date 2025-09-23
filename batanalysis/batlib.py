@@ -1957,8 +1957,8 @@ def query_swift_trigger_data(filter_type="time", return_query=False, query=None,
             if (trigger_time > Time(afst_entry.begin)) and (trigger_time < Time(afst_entry.end)):
                 snapshot_observations.append(afst_entry.obsid)
     
-    #now create a new column and add it to the astropy Table
-    col=table.Column(data=snapshot_observations, name="mastr_obsid", description="swiftmastr obsid with the attitude data associated with the trigger of interest")
+    #now create a new column and add it to the astropy Table, make it an object dtype since str prevents us from passing it in directly to swift_too
+    col=table.Column(data=snapshot_observations, name="mastr_obsid", description="swiftmastr obsid with the attitude data associated with the trigger of interest", dtype=table["obsid"].dtype)
     table.add_column(col)
 
     
@@ -2001,20 +2001,23 @@ def download_swift_trigger_data(triggers=None, triggerrange=None, triggertime=No
     Returns:
         dict(int:Swift_Data): Result of each trigger's download.
     """
-    if triggers is not None:
-        if np.isscalar(triggers):
-            triggers = [triggers]
-        triggertable, query=query_swift_trigger_data(filter_type="target_list", target_ids=triggers, return_query=True)
-    elif triggerrange is not None:
-        triggertable, query=query_swift_trigger_data(filter_type="target_range", min_target_id=np.min(triggerrange), max_target_id=np.max(triggerrange), return_query=True)
-    elif triggertime:
-        if np.isscalar(triggertime):
-            tstart, tend = Time([triggertime + datetime.timedelta(seconds=minplus * timewindow)
-                        for minplus in (-1, 1)])
-        else:
-            tstart=triggertime[0]
-            tend=triggertime[1]
-        triggertable, query = query_swift_trigger_data(filter_type="time", start_time=tstart, stop_time=tend, return_query=True)
+    if query is None:
+        if triggers is not None:
+            if np.isscalar(triggers):
+                triggers = [triggers]
+            triggertable, query=query_swift_trigger_data(filter_type="target_list", target_ids=triggers, return_query=True)
+        elif triggerrange is not None:
+            triggertable, query=query_swift_trigger_data(filter_type="target_range", min_target_id=np.min(triggerrange), max_target_id=np.max(triggerrange), return_query=True)
+        elif triggertime:
+            if np.isscalar(triggertime):
+                tstart, tend = Time([triggertime + datetime.timedelta(seconds=minplus * timewindow)
+                            for minplus in (-1, 1)])
+            else:
+                tstart=triggertime[0]
+                tend=triggertime[1]
+            triggertable, query = query_swift_trigger_data(filter_type="time", start_time=tstart, stop_time=tend, return_query=True)
+    else:
+        triggertable, query = query_swift_trigger_data(query=query, return_query=True)
     
     
     # UNIMPLEMENTED: triggers in quicklook data are not returned
@@ -2121,10 +2124,10 @@ def download_swift_trigger_data(triggers=None, triggerrange=None, triggertime=No
 
 
 
-                        except Exception as e:
-                            if fetch:
-                                warnings.warn(
-                                    f"Downloading the {obs_type} data from obsid {trigger} for subthreshold trigger {obsid} failed. Continuing with the next subthreshold trigger.")
+                    except Exception as e:
+                        if fetch:
+                            warnings.warn(
+                                    f"Downloading the {obs_type} data from obsid {obsid} for subthreshold trigger {trigger} failed with message {e}. Continuing with the next subthreshold trigger.")
 
 
                 #if res.status.errors:
@@ -2133,10 +2136,17 @@ def download_swift_trigger_data(triggers=None, triggerrange=None, triggertime=No
                 all_res.append(res)
 
             result[trigger] = all_res
+            
     if return_table:
-        return result, triggertable
+        if return_query:
+            return result, triggertable, query
+        else:
+            return result, triggertable
     else:
-        return result
+        if return_query:
+            return result, query
+        else:
+            return result
 
 
 def met2mjd(met_time):
