@@ -2018,7 +2018,7 @@ def download_swift_trigger_data(triggers=None, triggerrange=None, triggertime=No
         elif triggerrange is not None:
             triggertable, query=query_swift_trigger_data(filter_type="target_range", min_target_id=np.min(triggerrange), max_target_id=np.max(triggerrange), return_query=True)
         elif triggertime:
-            if np.isscalar(triggertime):
+            if np.size(triggertime)==1:
                 tstart, tend = Time([Time(triggertime) + datetime.timedelta(seconds=minplus * timewindow)
                             for minplus in (-1, 1)])
             else:
