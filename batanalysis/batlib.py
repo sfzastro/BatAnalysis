@@ -1581,7 +1581,7 @@ def download_swiftdata(
     obsids = []
     for entry in observations:
         try:  # swiftmastr observation table
-            entry = entry["OBSID"]
+            entry = entry["obsid"]
         except:
             pass
         try:  # swifttools.ObsQuery
@@ -1591,7 +1591,7 @@ def download_swiftdata(
         if isinstance(entry, int):
             entry = f"{entry:011d}"
         if not isinstance(entry, str):
-            raise RuntimeError(f"Can't convert {entry} to OBSID string")
+            raise RuntimeError(f"Can't convert {entry} to obsid string")
         obsids.append(entry)
     # Remove duplicate obsids, but otherwise keep in order.
     obsids = list({o: None for o in obsids}.keys())
@@ -1986,7 +1986,7 @@ def download_swift_trigger_data(triggers=None, triggerrange=None, triggertime=No
     Find data corresponding to trigger on remote server and local disk
 
     Looks up triggers in the 'swifttdrss' table, then downloads the selected triggers
-    to local disk. If return_table is True, the queried HEASARC swifttdrss table is also returned. 
+    to local disk. If return_table is True, the queried HEASARC swifttdrss table is also returned. If return_query is True, the constructed ADQL query that is sent to HEASARC is also returned.
     
     Currently, this function covers only data delivered to HEASARC, and not quicklook data.
 
