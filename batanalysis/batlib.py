@@ -1699,7 +1699,7 @@ def test_remote_URL(url):
     return requests.head(url).status_code < 400
 
 
-def from_heasarc(tablename="swiftmastr", time_range=None, columns=None, tap_query=None, return_query=False):
+def from_heasarc(tablename="swiftmastr", time_range=None, columns=None, query=None, return_query=False):
     """
     This function creates the basic TAP query for querying a table and extracting the data based on time ranges. The user can specify which columns are returned if necessary, otherwise all columns of the specified table are returned from the query. If no time_range is specified, the entire table is returned. 
     
@@ -1740,9 +1740,9 @@ def from_heasarc(tablename="swiftmastr", time_range=None, columns=None, tap_quer
         columns=heasarc.list_columns(tablename, full=True)["name"]
         
         
-    if tap_query is None:
+    if query is None:
         #then we construct the tap query based on the input
-        tap_query= f"SELECT TOP 9999999 {','.join(columns)} FROM {tablename} "
+        query= f"SELECT TOP 9999999 {','.join(columns)} FROM {tablename} "
         
         if time_range is not None:
             #extract the time related columns that we will query from. first get all time related info. This is meant to allow us to see if the table format has changed for whatever reason.
@@ -1756,15 +1756,15 @@ def from_heasarc(tablename="swiftmastr", time_range=None, columns=None, tap_quer
             
             #make sure that thetimes are converted to the correct format
             time_range=Time([i.to_value(time_column_info["unit"]) for i in time_range], format=time_column_info["unit"])
-            tap_query += f"WHERE {time_column_info['name']} BETWEEN {time_range.min()} AND {time_range.max()}"
+            query += f"WHERE {time_column_info['name']} BETWEEN {time_range.min()} AND {time_range.max()}"
                 
     try:
-        table = heasarc.query_tap(tap_query).to_table()
+        table = heasarc.query_tap(query).to_table()
     except Exception as e:
-        raise RuntimeError(f"The Heasarc TAP query {tap_query} failed with the following message: {e}")
+        raise RuntimeError(f"The Heasarc TAP query {query} failed with the following message: {e}")
         
     if return_query:
-        return table, tap_query
+        return table, query
     else:
         return table
 
@@ -1853,25 +1853,34 @@ def query_swift_trigger_data(filter_type="time", return_query=False, query=None,
     
     Returns:
     --------
-    astropy.table.Table: Result of the query with proper units
+    astropy.table.Table: Result of the query with proper units. When using any of the kwarg parameter options, the returned Table has the following columns: 
+            target_id, obsid, time, time_seconds, calibration_obsid, calibration_start_time, calibration_abs_dt, mastr_obsid
     """
     heasarc = Heasarc()
     
     # Check if a custom query was provided
     if query is None:
+        input_parameters=kwargs.keys()
             
         # Apply filtering condition
         filter_condition = ""
         if filter_type == "time":
-            # Convert times to MJD
-            start_time = Time(kwargs.get('start_time')).mjd
-            stop_time = Time(kwargs.get('stop_time')).mjd
-            filter_condition = f"WHERE time BETWEEN {start_time} AND {stop_time}"
+            if 'start_time' in input_parameters and 'stop_time' in input_parameters:
+                # Convert times to MJD
+                start_time = Time(kwargs.get('start_time')).mjd
+                stop_time = Time(kwargs.get('stop_time')).mjd
+                filter_condition = f"WHERE time BETWEEN {start_time} AND {stop_time}"
+            else:
+                raise ValueError(f"When filter_type is set to time, both the start_time and stop_time parameters must be passed in.")
             
         elif filter_type == "target_range":
-            min_id = kwargs.get('min_target_id')
-            max_id = kwargs.get('max_target_id')
-            filter_condition = f"WHERE target_id BETWEEN {min_id} AND {max_id}"
+            if 'min_target_id' in input_parameters and 'max_target_id' in input_parameters:
+                min_id = kwargs.get('min_target_id')
+                max_id = kwargs.get('max_target_id')
+                filter_condition = f"WHERE target_id BETWEEN {min_id} AND {max_id}"
+            else:
+                raise ValueError(f"When filter_type is set to target_range, both the min_target_id and max_target_id parameters must be passed in.")
+
             
         elif filter_type == "target_list":
             target_ids = kwargs.get('target_ids', [])
@@ -1988,8 +1997,8 @@ def download_swift_trigger_data(triggers=None, triggerrange=None, triggertime=No
     Args:
         :param triggers (int|Iterable[int], optional): Specific trigger number. Defaults to None.
         :param triggerrange (Tuple[int,int], optional): inclusive range of trigger numbers. Defaults to None.
-        :param triggertime (datetime.datetime|Iterable[datetime.datetime], optional): Time of desired trigger(s) or a list/array that defines the times to obtain triggers within (the timebin edges are not inclusive). Defaults to None.
-        :param timewindow (float, optional): Number of seconds +/- triggertime. Defaults to 300.
+        :param triggertime (datetime.datetime|Iterable[datetime.datetime|astropy.time.Time], optional): UTC Time of desired trigger(s) or a list/array that defines the times to obtain triggers within (the timebin edges are not inclusive). The passed values can be an astropy Time object, a datetime object, or an iterable of a datetime object, an astropy Time object, or any string in any Astropy-compatible format. Defaults to None. 
+        :param timewindow (float, optional): Number of seconds +/- to the triggertime to get a range of UTC times to search for TTE data. Defaults to 300.
         :param fetch (bool, optional): Copy from server to local disk, if necessary
         :param outdir (Path, optional): Top-level data directory for download.
         :param clobber (bool): Overwrite local files.  Defaults to False.
@@ -2010,7 +2019,7 @@ def download_swift_trigger_data(triggers=None, triggerrange=None, triggertime=No
             triggertable, query=query_swift_trigger_data(filter_type="target_range", min_target_id=np.min(triggerrange), max_target_id=np.max(triggerrange), return_query=True)
         elif triggertime:
             if np.isscalar(triggertime):
-                tstart, tend = Time([triggertime + datetime.timedelta(seconds=minplus * timewindow)
+                tstart, tend = Time([Time(triggertime) + datetime.timedelta(seconds=minplus * timewindow)
                             for minplus in (-1, 1)])
             else:
                 tstart=triggertime[0]
