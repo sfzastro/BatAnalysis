@@ -623,9 +623,9 @@ class BatSkyImage(Histogram):
             elif "healpix" in projection.lower():
                 hist = self.healpix_projection(coordsys="galactic", nside=nside)
                 if "galactic" in coordsys.lower():
-                    coord = ["G"]
+                    coord = "G"
                 elif "icrs" in coordsys.lower():
-                    coord = ["G", "C"]
+                    coord = "C"
                 else:
                     raise ValueError('This plotting function can only plot the healpix map in galactic or icrs '
                                      'coordinates.')
