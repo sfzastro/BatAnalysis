@@ -12,5 +12,6 @@ dpath>=2.1.4
 histpy>=2.0.2
 reproject>=0.13.1
 healpy>=1.16.6
+mhealpy>=0.3.5
 astro-gdt-swift>=1.0.1
 ligo.skymap>=2.1.2
