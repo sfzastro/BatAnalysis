@@ -630,16 +630,31 @@ class BatSkyImage(Histogram):
                     raise ValueError('This plotting function can only plot the healpix map in galactic or icrs '
                                      'coordinates.')
 
-                plot_quantity = BatSkyImage(image_data=hist.slice[tmin_idx:tmax_idx, :, emin_idx:emax_idx],
-                                            image_type=self.image_type,
-                                            is_mosaic_intermediate=self.is_mosaic_intermediate).project("HPX").contents
+                if tmin is not None and emin is not None:
+                    plot_quantity = self.slice[tmin_idx:tmax_idx, :, emin_idx:emax_idx].project("HPX").contents
+                    
+                #plot_quantity = BatSkyImage(image_data=hist.slice[tmin_idx:tmax_idx, :, emin_idx:emax_idx],
+                #                            image_type=self.image_type,
+                #                            is_mosaic_intermediate=self.is_mosaic_intermediate).project("HPX").contents
+                elif tmin is not None and emin is None:
+                    plot_quantity =  self.slice[{h.axes.label_to_index("TIME"):slice(tmin_idx,tmax_idx)}].project("HPX").contents
+                elif tmin is None and emin is not None:
+                    plot_quantity =  self.slice[{h.axes.label_to_index("ENERGY"):slice(emin_idx,emax_idx)}].project("HPX").contents
+                else:
+                    plot_quantity = self.contents
+                
                 if isinstance(plot_quantity, u.Quantity):
                     plot_quantity = plot_quantity.value
-
-                mesh = projview(plot_quantity,
-                                coord=coord, graticule=True, graticule_labels=True,
-                                projection_type="mollweide", reuse_axes=False)
-                ret = (mesh)
+                    
+                m = mhp.HealpixMap(data=plot_quantity, coordsys="G")
+                
+                plotMoll, projMoll= m.plot(ax_kw={"coord":coord}, interpolation='none')
+                projMoll.graticule(dmer=60, color="gray", alpha=0.5, linewidth=0.75)
+                projMoll.coords[0].set_ticklabel_visible(True)
+                projMoll.coords[1].set_ticklabel_visible(True)
+                
+                ret = (plotMoll, projMoll)
+                
             else:
                 raise ValueError("The projection value only accepts ra/dec or healpix as inputs.")
 
