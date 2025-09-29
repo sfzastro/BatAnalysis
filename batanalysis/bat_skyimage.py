@@ -631,17 +631,17 @@ class BatSkyImage(Histogram):
                                      'coordinates.')
 
                 if tmin is not None and emin is not None:
-                    plot_quantity = self.slice[tmin_idx:tmax_idx, :, emin_idx:emax_idx].project("HPX").contents
+                    plot_quantity = hist.slice[tmin_idx:tmax_idx, :, emin_idx:emax_idx].project("HPX").contents
                     
                 #plot_quantity = BatSkyImage(image_data=hist.slice[tmin_idx:tmax_idx, :, emin_idx:emax_idx],
                 #                            image_type=self.image_type,
                 #                            is_mosaic_intermediate=self.is_mosaic_intermediate).project("HPX").contents
                 elif tmin is not None and emin is None:
-                    plot_quantity =  self.slice[{h.axes.label_to_index("TIME"):slice(tmin_idx,tmax_idx)}].project("HPX").contents
+                    plot_quantity =  hist.slice[{h.axes.label_to_index("TIME"):slice(tmin_idx,tmax_idx)}].project("HPX").contents
                 elif tmin is None and emin is not None:
-                    plot_quantity =  self.slice[{h.axes.label_to_index("ENERGY"):slice(emin_idx,emax_idx)}].project("HPX").contents
+                    plot_quantity =  hist.slice[{h.axes.label_to_index("ENERGY"):slice(emin_idx,emax_idx)}].project("HPX").contents
                 else:
-                    plot_quantity = self.contents
+                    plot_quantity = hist.contents
                 
                 if isinstance(plot_quantity, u.Quantity):
                     plot_quantity = plot_quantity.value
